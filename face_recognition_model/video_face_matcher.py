@@ -63,13 +63,15 @@ FACE_MATCH_THRESHOLD = 0.5
 # Require N consecutive matching frames before confirming identity
 CONFIRMATION_FRAMES = 2
 
-# Scale factor applied before detection (0.25 = quarter resolution).
-# Speeds up processing significantly; increase toward 1.0 for better accuracy.
-DETECTION_SCALE = 0.25
+# Scale factor applied before detection (0.5 = half resolution).
+# 0.5 gives ~2x better range than 0.25 — important for detecting distant faces
+# (e.g. driver sitting 1-2 m from a dashboard camera).
+DETECTION_SCALE = 0.5
 
 # Run face detection only on every Nth captured frame; display uses the last
-# known result for skipped frames — big FPS boost with minimal visual lag.
-DETECT_EVERY_N_FRAMES = 3
+# known result for skipped frames.  Detection runs in a background thread so
+# the display FPS is not affected — only bounding-box update lag changes.
+DETECT_EVERY_N_FRAMES = 6
 
 CV_WINDOW_NAME = "Face Recognition (Q=quit  S=snapshot  R=reload)"
 
@@ -193,7 +195,7 @@ def run_camera(known_encodings, known_names):
             if item is None:
                 break
             rgb_small, enc_snapshot, names_snapshot = item
-            locs  = face_recognition.face_locations(rgb_small, model="hog")
+            locs  = face_recognition.face_locations(rgb_small, number_of_times_to_upsample=1, model="hog")
             faces = face_recognition.face_encodings(rgb_small, locs)
             inv   = 1.0 / DETECTION_SCALE
             full_locs = [
@@ -298,12 +300,17 @@ def run_camera(known_encodings, known_names):
 # ---------------------------------------------------------------------------
 
 # Guided poses for multi-angle registration (tailored for driver monitoring)
+# Covers close angles + distance shots so the system recognises the driver
+# from their normal seated position 1-2 m from the dashboard camera.
 REGISTER_POSES = [
-    "Look straight at the camera",
-    "Turn your head slightly LEFT",
-    "Turn your head slightly RIGHT",
-    "Tilt your head slightly UP",
-    "Tilt your head slightly DOWN",
+    "CLOSE-UP: Look straight at the camera",
+    "CLOSE-UP: Turn your head slightly LEFT",
+    "CLOSE-UP: Turn your head slightly RIGHT",
+    "DISTANCE (~1 m): Look straight — step / lean back",
+    "DISTANCE (~1 m): Turn your head slightly LEFT",
+    "DISTANCE (~1 m): Turn your head slightly RIGHT",
+    "DISTANCE (~2 m): Look straight — at normal driver distance",
+    "DISTANCE (~2 m): Turn your head slightly LEFT",
 ]
 
 
@@ -349,7 +356,7 @@ def register_face(name):
 
             small     = cv2.resize(frame, (0, 0), fx=DETECTION_SCALE, fy=DETECTION_SCALE)
             rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-            locs      = face_recognition.face_locations(rgb_small, model="hog")
+            locs      = face_recognition.face_locations(rgb_small, number_of_times_to_upsample=1, model="hog")
             inv       = 1.0 / DETECTION_SCALE
 
             face_found = len(locs) == 1
