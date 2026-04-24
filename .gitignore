@@ -2,7 +2,10 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+django_venv/
+venv/
+__pycache__/
+.env
 # C extensions
 *.so
 
