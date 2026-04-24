@@ -4,9 +4,12 @@
 # ---------------------------------------------------------------
 
 # --- Face Recognition (core) ---
-# deepface: no C++ compilation needed on Windows (unlike dlib/face_recognition)
-deepface>=0.0.93                 # multi-backend face recognition (Facenet512, ArcFace, etc.)
-tf-keras                         # required by deepface with TensorFlow >= 2.16
+# Same stack used on Raspberry Pi.
+# dlib must be pinned to 19.24.x — these versions ship pre-built Windows wheels
+# so no Visual C++ or CMake build is required on Windows.
+# On the Pi, pip installs from the ARM wheel or builds from source normally.
+dlib==19.24.6                    # pinned: has pre-built wheel for Win/Mac/Linux
+face_recognition>=1.3.0          # wraps dlib — identical on PC and Pi
 opencv-python>=4.5.0             # webcam capture & display
 numpy>=1.21.0                    # numerical ops
 
