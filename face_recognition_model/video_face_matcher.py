@@ -2,71 +2,97 @@
 """
 PC-Compatible Face Recognition - Laptop Webcam
 ------------------------------------------------
-Replaces the Intel NCS (Movidius) inference pipeline with the
-`face_recognition` library (dlib-based) so the system runs entirely
-on a standard PC/laptop without any special hardware.
+Backend: DeepFace (no C++ compilation required on Windows)
+
+First run will download model weights automatically (~90 MB for Facenet512).
+Subsequent runs use the cached model and start instantly.
 
 Usage:
     python video_face_matcher.py
 
 Controls:
     Q  - quit
-    S  - save a snapshot of the current frame
-    R  - reload known faces from validated_images/ at runtime
+    S  - save snapshot of current frame
+    R  - hot-reload reference faces from validated_images/
 
 Known faces:
-    Drop one or more .jpg/.png images into  face_recognition_model/validated_images/
-    Each image should contain exactly one clearly visible face.
-    The filename (without extension) is used as the person's display name.
-    e.g.  validated_images/alice.jpg  ->  label "alice"
-
-Match indicator:
-    Green border  = a known face detected in the frame
-    Red border    = no known face detected
+    Drop .jpg/.png images into face_recognition_model/validated_images/
+    Each image should contain exactly one face.
+    The filename (minus extension) becomes the display label.
+    e.g.  validated_images/alice.jpg  ->  "alice"
 """
 
 import os
 import sys
 import time
+
+# Suppress TensorFlow startup noise
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+
 import cv2
 import numpy as np
-import face_recognition
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-VALIDATED_IMAGES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "validated_images")
+VALIDATED_IMAGES_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "validated_images"
+)
 
-CAMERA_INDEX = 0                  # 0 = default webcam; change if you have multiple
+CAMERA_INDEX          = 0      # 0 = default laptop webcam
 REQUEST_CAMERA_WIDTH  = 640
 REQUEST_CAMERA_HEIGHT = 480
 
-# Euclidean distance threshold for face_recognition (lower = stricter)
-# face_recognition default tolerance is 0.6; we use 0.5 for better precision
-FACE_MATCH_THRESHOLD = 0.5
+# DeepFace model — options: "Facenet512", "VGG-Face", "ArcFace", "Facenet"
+# Facenet512 is accurate and fast enough for real-time use on CPU.
+MODEL_NAME        = "Facenet512"
 
-# How many consecutive matching frames before we declare a confirmed match
+# Face detector backend — "opencv" is fastest on CPU; "ssd" is a good middle ground
+DETECTOR_BACKEND  = "opencv"
+
+# Cosine distance threshold: 0.0 = identical, 1.0 = completely different.
+# Facenet512 + cosine: recommended range 0.30-0.45
+MATCH_THRESHOLD   = 0.40
+
+# Require this many consecutive matching frames to confirm identity
 CONFIRMATION_FRAMES = 2
-
-# Scale down each frame before face detection (speeds up processing)
-DETECTION_SCALE = 0.5
 
 CV_WINDOW_NAME = "Face Recognition - PC (press Q to quit)"
 
 # ---------------------------------------------------------------------------
-# Load known faces from validated_images/
+# Import DeepFace (done here so TF loads once, not per-call)
+# ---------------------------------------------------------------------------
+print("[INFO] Loading DeepFace / TensorFlow — please wait...")
+from deepface import DeepFace
+print("[INFO] DeepFace ready.")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def cosine_distance(a, b):
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    denom = (np.linalg.norm(a) * np.linalg.norm(b)) + 1e-10
+    return float(1.0 - np.dot(a, b) / denom)
+
+
+# ---------------------------------------------------------------------------
+# Load reference faces
 # ---------------------------------------------------------------------------
 
 def load_known_faces(images_dir):
     """
-    Scan images_dir for image files and compute face encodings.
-    Returns (known_encodings, known_names).
+    Read every image in images_dir, compute its DeepFace embedding,
+    and return (embeddings_list, names_list).
     """
     known_encodings = []
-    known_names = []
+    known_names     = []
 
     if not os.path.isdir(images_dir):
-        print("[WARN] Validated images directory not found: " + images_dir)
+        print("[WARN] Validated-images directory not found: " + images_dir)
         return known_encodings, known_names
 
     supported = (".jpg", ".jpeg", ".png", ".bmp")
@@ -74,71 +100,128 @@ def load_known_faces(images_dir):
         if not fname.lower().endswith(supported):
             continue
         fpath = os.path.join(images_dir, fname)
-        image = face_recognition.load_image_file(fpath)
-        encodings = face_recognition.face_encodings(image)
-        if not encodings:
-            print("[WARN] No face detected in " + fname + ", skipping.")
-            continue
-        if len(encodings) > 1:
-            print("[INFO] Multiple faces in " + fname + ", using the first one.")
-        name = os.path.splitext(fname)[0]
-        known_encodings.append(encodings[0])
-        known_names.append(name)
-        print("[INFO] Loaded face: " + name)
+        try:
+            result = DeepFace.represent(
+                img_path=fpath,
+                model_name=MODEL_NAME,
+                detector_backend=DETECTOR_BACKEND,
+                enforce_detection=True,
+                align=True,
+            )
+            embedding = np.array(result[0]["embedding"], dtype=np.float64)
+            name = os.path.splitext(fname)[0]
+            known_encodings.append(embedding)
+            known_names.append(name)
+            print("[INFO] Loaded face: " + name)
+        except Exception as exc:
+            print("[WARN] Skipping " + fname + " — " + str(exc))
 
     if not known_encodings:
-        print("[WARN] No valid reference faces loaded. All frames will show as UNKNOWN.")
+        print("[WARN] No reference faces loaded. All detections will show UNKNOWN.")
     else:
-        print("[INFO] " + str(len(known_encodings)) + " reference face(s) loaded.")
+        print("[INFO] " + str(len(known_encodings)) + " reference face(s) ready.")
 
     return known_encodings, known_names
 
 
 # ---------------------------------------------------------------------------
-# Overlay helpers
+# Per-frame face detection + embedding
+# ---------------------------------------------------------------------------
+
+def get_frame_faces(frame):
+    """
+    Run DeepFace on a BGR frame.
+    Returns list of (embedding_ndarray, facial_area_dict).
+    facial_area keys: x, y, w, h
+    """
+    try:
+        results = DeepFace.represent(
+            img_path=frame,
+            model_name=MODEL_NAME,
+            detector_backend=DETECTOR_BACKEND,
+            enforce_detection=True,
+            align=True,
+        )
+        faces = []
+        for r in results:
+            emb  = np.array(r["embedding"], dtype=np.float64)
+            area = r["facial_area"]   # {"x", "y", "w", "h", ...}
+            faces.append((emb, area))
+        return faces
+    except ValueError:
+        # DeepFace raises ValueError when no face is detected
+        return []
+    except Exception:
+        return []
+
+
+def match_face(embedding, known_encodings, known_names):
+    """Return (best_name, distance). Name is UNKNOWN if above threshold."""
+    if not known_encodings:
+        return "UNKNOWN", 1.0
+    distances = [cosine_distance(embedding, ke) for ke in known_encodings]
+    best_idx  = int(np.argmin(distances))
+    best_dist = distances[best_idx]
+    if best_dist <= MATCH_THRESHOLD:
+        return known_names[best_idx], best_dist
+    return "UNKNOWN", best_dist
+
+
+# ---------------------------------------------------------------------------
+# Drawing helpers
 # ---------------------------------------------------------------------------
 
 def draw_border(frame, matching):
-    """Draw a thick colored border - green for match, red for no match."""
     color = (0, 255, 0) if matching else (0, 0, 255)
-    thickness = 12
-    h, w = frame.shape[:2]
-    cv2.rectangle(frame, (thickness // 2, thickness // 2),
-                  (w - thickness // 2, h - thickness // 2),
-                  color, thickness)
+    h, w  = frame.shape[:2]
+    cv2.rectangle(frame, (6, 6), (w - 6, h - 6), color, 12)
 
 
-def draw_face_boxes(frame, face_locations, face_names):
-    """Draw a box and label around each detected face."""
-    for (top, right, bottom, left), name in zip(face_locations, face_names):
-        matched = name != "UNKNOWN"
-        box_color  = (0, 220, 0)  if matched else (0, 0, 220)
-        text_color = (255, 255, 255)
+def draw_faces(frame, face_results, known_encodings, known_names):
+    """
+    Draw a box + label for every detected face.
+    Returns (any_match_found: bool, matched_names: list).
+    """
+    any_match    = False
+    matched_names = []
 
-        cv2.rectangle(frame, (left, top), (right, bottom), box_color, 2)
+    for embedding, area in face_results:
+        x = area.get("x", 0)
+        y = area.get("y", 0)
+        w = area.get("w", 0)
+        h = area.get("h", 0)
 
-        label_h = 22
-        cv2.rectangle(frame, (left, bottom - label_h - 4), (right, bottom),
-                      box_color, cv2.FILLED)
-        cv2.putText(frame, name, (left + 4, bottom - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, text_color, 1)
+        name, dist = match_face(embedding, known_encodings, known_names)
+        matched    = name != "UNKNOWN"
+        if matched:
+            any_match = True
+            matched_names.append(name)
+
+        box_color = (0, 200, 0) if matched else (0, 0, 200)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), box_color, 2)
+
+        label = name + " (" + "{:.2f}".format(dist) + ")"
+        cv2.rectangle(frame, (x, y + h - 24), (x + w, y + h), box_color, cv2.FILLED)
+        cv2.putText(frame, label, (x + 4, y + h - 7),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+    return any_match, matched_names
 
 
 def draw_hud(frame, fps, confirmed_match, matched_names):
-    """Overlay HUD text (FPS, status)."""
-    status_text  = "MATCH: " + ", ".join(matched_names) if confirmed_match else "NO MATCH"
-    status_color = (0, 220, 0) if confirmed_match else (0, 0, 220)
-
+    status = ("MATCH: " + ", ".join(matched_names)) if confirmed_match else "NO MATCH"
+    color  = (0, 200, 0) if confirmed_match else (0, 0, 200)
     cv2.putText(frame, "FPS: " + str(round(fps, 1)), (10, 24),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 200, 200), 1)
-    cv2.putText(frame, status_text, (10, 52),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.75, status_color, 2)
-    cv2.putText(frame, "Q=quit  S=snapshot  R=reload faces", (10, frame.shape[0] - 10),
+    cv2.putText(frame, status, (10, 52),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+    cv2.putText(frame, "Q=quit  S=snapshot  R=reload faces",
+                (10, frame.shape[0] - 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
 
 
 # ---------------------------------------------------------------------------
-# Main recognition loop
+# Main camera loop
 # ---------------------------------------------------------------------------
 
 def run_camera(known_encodings, known_names):
@@ -147,8 +230,8 @@ def run_camera(known_encodings, known_names):
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, REQUEST_CAMERA_HEIGHT)
 
     if not camera.isOpened():
-        print("[ERROR] Could not open webcam. "
-              "Check that a camera is connected and not in use by another app.")
+        print("[ERROR] Could not open webcam (index " + str(CAMERA_INDEX) + ").")
+        print("        Make sure no other app is using it.")
         sys.exit(1)
 
     actual_w = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -160,47 +243,23 @@ def run_camera(known_encodings, known_names):
     match_streak    = 0
     confirmed_match = False
     matched_names   = []
-
-    prev_time = time.time()
-    snapshot_count = 0
+    snapshot_count  = 0
+    prev_time       = time.time()
 
     while True:
         ret, frame = camera.read()
         if not ret:
-            print("[ERROR] Failed to read frame from camera.")
+            print("[ERROR] Failed to read from camera.")
             break
 
-        now  = time.time()
-        fps  = 1.0 / max(now - prev_time, 1e-6)
+        now       = time.time()
+        fps       = 1.0 / max(now - prev_time, 1e-6)
         prev_time = now
 
-        # Scale down for faster detection
-        small = cv2.resize(frame, (0, 0), fx=DETECTION_SCALE, fy=DETECTION_SCALE)
-        rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-
-        face_locations_small = face_recognition.face_locations(rgb_small, model="hog")
-        face_encodings = face_recognition.face_encodings(rgb_small, face_locations_small)
-
-        # Scale locations back to full-frame coordinates
-        scale_inv = 1.0 / DETECTION_SCALE
-        face_locations = [
-            (int(top * scale_inv), int(right * scale_inv),
-             int(bottom * scale_inv), int(left * scale_inv))
-            for (top, right, bottom, left) in face_locations_small
-        ]
-
-        frame_names   = []
-        frame_matched = False
-
-        for encoding in face_encodings:
-            name = "UNKNOWN"
-            if known_encodings:
-                distances = face_recognition.face_distance(known_encodings, encoding)
-                best_idx  = int(np.argmin(distances))
-                if distances[best_idx] <= FACE_MATCH_THRESHOLD:
-                    name = known_names[best_idx]
-                    frame_matched = True
-            frame_names.append(name)
+        face_results              = get_frame_faces(frame)
+        frame_matched, frame_names = draw_faces(
+            frame, face_results, known_encodings, known_names
+        )
 
         if frame_matched:
             match_streak += 1
@@ -208,9 +267,8 @@ def run_camera(known_encodings, known_names):
             match_streak = 0
 
         confirmed_match = match_streak >= CONFIRMATION_FRAMES
-        matched_names   = [n for n in frame_names if n != "UNKNOWN"] if confirmed_match else []
+        matched_names   = frame_names if confirmed_match else []
 
-        draw_face_boxes(frame, face_locations, frame_names)
         draw_border(frame, confirmed_match)
         draw_hud(frame, fps, confirmed_match, matched_names)
 
@@ -220,16 +278,16 @@ def run_camera(known_encodings, known_names):
         cv2.imshow(CV_WINDOW_NAME, frame)
         key = cv2.waitKey(1) & 0xFF
 
-        if key == ord("q") or key == ord("Q"):
+        if key in (ord("q"), ord("Q")):
             print("[INFO] User quit.")
             break
-        elif key == ord("s") or key == ord("S"):
-            snap_path = "snapshot_" + str(snapshot_count).zfill(4) + ".jpg"
-            cv2.imwrite(snap_path, frame)
-            print("[INFO] Snapshot saved: " + snap_path)
+        elif key in (ord("s"), ord("S")):
+            snap = "snapshot_" + str(snapshot_count).zfill(4) + ".jpg"
+            cv2.imwrite(snap, frame)
+            print("[INFO] Snapshot saved: " + snap)
             snapshot_count += 1
-        elif key == ord("r") or key == ord("R"):
-            print("[INFO] Reloading known faces...")
+        elif key in (ord("r"), ord("R")):
+            print("[INFO] Reloading reference faces...")
             new_enc, new_names = load_known_faces(VALIDATED_IMAGES_DIR)
             known_encodings.clear()
             known_names.clear()
@@ -250,10 +308,11 @@ def run_camera(known_encodings, known_names):
 def main():
     print("=" * 60)
     print(" PC Face Recognition System")
+    print(" Backend : DeepFace / " + MODEL_NAME)
     print("=" * 60)
-    print("Reference faces directory : " + VALIDATED_IMAGES_DIR)
-    print("Match threshold           : " + str(FACE_MATCH_THRESHOLD))
-    print("Confirmation frames       : " + str(CONFIRMATION_FRAMES))
+    print("Reference faces dir : " + VALIDATED_IMAGES_DIR)
+    print("Match threshold     : " + str(MATCH_THRESHOLD))
+    print("Confirmation frames : " + str(CONFIRMATION_FRAMES))
     print()
 
     known_encodings, known_names = load_known_faces(VALIDATED_IMAGES_DIR)

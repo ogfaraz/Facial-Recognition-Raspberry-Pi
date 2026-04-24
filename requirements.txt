@@ -4,7 +4,9 @@
 # ---------------------------------------------------------------
 
 # --- Face Recognition (core) ---
-face_recognition>=1.3.0          # dlib-based face recognition
+# deepface: no C++ compilation needed on Windows (unlike dlib/face_recognition)
+deepface>=0.0.93                 # multi-backend face recognition (Facenet512, ArcFace, etc.)
+tf-keras                         # required by deepface with TensorFlow >= 2.16
 opencv-python>=4.5.0             # webcam capture & display
 numpy>=1.21.0                    # numerical ops
 
