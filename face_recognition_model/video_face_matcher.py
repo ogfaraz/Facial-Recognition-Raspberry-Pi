@@ -2,7 +2,7 @@
 """
 PC / Raspberry Pi Face Recognition - Laptop/Pi Camera
 
-Register yourself:
+Register a person (5 guided angle shots):
     python video_face_matcher.py --register "YourName"
 
 Then run normally:
@@ -35,6 +35,7 @@ Match indicator:
 """
 
 import os
+import re
 import sys
 import time
 import queue
@@ -100,10 +101,12 @@ def load_known_faces(images_dir):
             continue
         if len(encodings) > 1:
             print("[INFO] Multiple faces in " + fname + " — using first.")
-        name = os.path.splitext(fname)[0]
+        # Strip trailing _1 / _2 / _N suffix so multi-angle shots share one label
+        base = os.path.splitext(fname)[0]
+        name = re.sub(r'_\d+$', '', base)
         known_encodings.append(encodings[0])
         known_names.append(name)
-        print("[INFO] Loaded: " + name)
+        print("[INFO] Loaded: " + base + " -> label '" + name + "'")
 
     if not known_encodings:
         print("[WARN] No reference faces loaded. All detections will be UNKNOWN.")
@@ -294,10 +297,29 @@ def run_camera(known_encodings, known_names):
 # Registration mode
 # ---------------------------------------------------------------------------
 
+# Guided poses for multi-angle registration (tailored for driver monitoring)
+REGISTER_POSES = [
+    "Look straight at the camera",
+    "Turn your head slightly LEFT",
+    "Turn your head slightly RIGHT",
+    "Tilt your head slightly UP",
+    "Tilt your head slightly DOWN",
+]
+
+
 def register_face(name):
-    """Open webcam, let user frame their face, press SPACE to capture and save."""
-    out_path = os.path.join(VALIDATED_IMAGES_DIR, name + ".jpg")
+    """
+    Capture REGISTER_SHOTS images at different angles and save them as
+    Name_1.jpg … Name_N.jpg.  load_known_faces() strips the _N suffix so
+    all shots register under the same label.
+    """
     os.makedirs(VALIDATED_IMAGES_DIR, exist_ok=True)
+
+    # Remove any existing shots for this person so re-registration is clean
+    safe = re.sub(r'[^\w\s-]', '', name)   # strip chars unsafe for filenames
+    for f in os.listdir(VALIDATED_IMAGES_DIR):
+        if re.match(re.escape(safe) + r'(_\d+)?\.jpg$', f, re.IGNORECASE):
+            os.remove(os.path.join(VALIDATED_IMAGES_DIR, f))
 
     camera = cv2.VideoCapture(CAMERA_INDEX)
     camera.set(cv2.CAP_PROP_FRAME_WIDTH,  REQUEST_CAMERA_WIDTH)
@@ -308,62 +330,85 @@ def register_face(name):
         print("[ERROR] Could not open camera.")
         sys.exit(1)
 
-    win = "Register face — SPACE=capture  Q=cancel"
+    total   = len(REGISTER_POSES)
+    saved   = 0
+    win     = "Register — SPACE=capture  Q=cancel"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-    print("[REGISTER] Look at the camera.")
-    print("[REGISTER] Press SPACE to capture, Q to cancel.")
 
-    while True:
-        ret, frame = camera.read()
-        if not ret:
-            break
+    print("[REGISTER] Registering: " + name)
+    print("[REGISTER] " + str(total) + " shots needed. Press SPACE for each pose, Q to cancel.")
 
-        # Detect faces live so user can centre themselves
-        small     = cv2.resize(frame, (0, 0), fx=DETECTION_SCALE, fy=DETECTION_SCALE)
-        rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-        locs      = face_recognition.face_locations(rgb_small, model="hog")
-        inv       = 1.0 / DETECTION_SCALE
+    while saved < total:
+        pose = REGISTER_POSES[saved]
+        print("[REGISTER] Shot " + str(saved + 1) + "/" + str(total) + ": " + pose)
 
-        face_found = len(locs) == 1
-        for (t, r, b, l) in locs:
-            t2, r2, b2, l2 = int(t*inv), int(r*inv), int(b*inv), int(l*inv)
-            color = (0, 220, 0) if face_found else (0, 80, 220)
-            cv2.rectangle(frame, (l2, t2), (r2, b2), color, 2)
+        while True:   # inner loop: stay on current pose until captured
+            ret, frame = camera.read()
+            if not ret:
+                break
 
-        guide  = "Face detected — press SPACE to save" if face_found else "No face detected — please centre yourself"
-        g_col  = (0, 220, 0) if face_found else (0, 80, 220)
-        cv2.putText(frame, "Registering: " + name, (10, 28),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-        cv2.putText(frame, guide, (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, g_col, 2)
-        cv2.putText(frame, "SPACE=capture  Q=cancel",
-                    (10, frame.shape[0] - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+            small     = cv2.resize(frame, (0, 0), fx=DETECTION_SCALE, fy=DETECTION_SCALE)
+            rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            locs      = face_recognition.face_locations(rgb_small, model="hog")
+            inv       = 1.0 / DETECTION_SCALE
 
-        cv2.imshow(win, frame)
-        key = cv2.waitKey(1) & 0xFF
+            face_found = len(locs) == 1
+            for (t, r, b, l) in locs:
+                t2, r2, b2, l2 = int(t*inv), int(r*inv), int(b*inv), int(l*inv)
+                cv2.rectangle(frame, (l2, t2), (r2, b2),
+                              (0, 220, 0) if face_found else (0, 80, 220), 2)
 
-        if key in (ord("q"), ord("Q")):
-            print("[REGISTER] Cancelled.")
-            break
-        elif key == ord(" "):
-            if not face_found:
-                print("[REGISTER] No face detected — try again.")
-                continue
-            # Save the full frame (the matcher will find the face inside it)
-            rgb_full = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            encs = face_recognition.face_encodings(rgb_full)
-            if not encs:
-                print("[REGISTER] Could not encode face — try again.")
-                continue
-            cv2.imwrite(out_path, frame)
-            print("[REGISTER] Saved: " + out_path)
-            print("[REGISTER] Run the script normally to start recognising you.")
-            break
+            # Progress bar
+            bar_w = int((frame.shape[1] - 20) * saved / total)
+            cv2.rectangle(frame, (10, frame.shape[0] - 28),
+                          (10 + bar_w, frame.shape[0] - 14), (0, 200, 80), cv2.FILLED)
+            cv2.rectangle(frame, (10, frame.shape[0] - 28),
+                          (frame.shape[1] - 10, frame.shape[0] - 14), (180, 180, 180), 1)
 
-        if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
-            break
+            status = ("Face detected — press SPACE"
+                      if face_found else "No face detected — please centre yourself")
+            cv2.putText(frame,
+                        "Registering: " + name + "  (" + str(saved) + "/" + str(total) + ")",
+                        (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(frame, pose, (10, 58),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 200, 255), 2)
+            cv2.putText(frame, status, (10, 86),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                        (0, 220, 0) if face_found else (0, 80, 220), 1)
 
+            cv2.imshow(win, frame)
+            key = cv2.waitKey(1) & 0xFF
+
+            if key in (ord("q"), ord("Q")):
+                print("[REGISTER] Cancelled.")
+                camera.release()
+                cv2.destroyAllWindows()
+                return
+
+            if key == ord(" "):
+                if not face_found:
+                    print("[REGISTER] No face detected — try again.")
+                    continue
+                rgb_full = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                encs = face_recognition.face_encodings(rgb_full)
+                if not encs:
+                    print("[REGISTER] Could not encode — try again.")
+                    continue
+                out_path = os.path.join(VALIDATED_IMAGES_DIR,
+                                        safe + "_" + str(saved + 1) + ".jpg")
+                cv2.imwrite(out_path, frame)
+                saved += 1
+                print("[REGISTER] Saved shot " + str(saved) + "/" + str(total)
+                      + " -> " + out_path)
+                break
+
+            if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
+                camera.release()
+                cv2.destroyAllWindows()
+                return
+
+    print("[REGISTER] Done! " + str(total) + " shots saved for '" + name + "'.")
+    print("[REGISTER] Run the script normally to start recognising.")
     camera.release()
     cv2.destroyAllWindows()
 
