@@ -1,6 +1,12 @@
 ﻿#!/usr/bin/env python3
 """
 PC / Raspberry Pi Face Recognition - Laptop/Pi Camera
+
+Register yourself:
+    python video_face_matcher.py --register "YourName"
+
+Then run normally:
+    python video_face_matcher.py
 -------------------------------------------------------
 Uses the same `face_recognition` library (dlib-based) that runs on
 Raspberry Pi, so the code and results are identical on both platforms.
@@ -33,6 +39,7 @@ import sys
 import time
 import queue
 import threading
+import argparse
 import cv2
 import numpy as np
 import face_recognition
@@ -284,14 +291,104 @@ def run_camera(known_encodings, known_names):
 
 
 # ---------------------------------------------------------------------------
+# Registration mode
+# ---------------------------------------------------------------------------
+
+def register_face(name):
+    """Open webcam, let user frame their face, press SPACE to capture and save."""
+    out_path = os.path.join(VALIDATED_IMAGES_DIR, name + ".jpg")
+    os.makedirs(VALIDATED_IMAGES_DIR, exist_ok=True)
+
+    camera = cv2.VideoCapture(CAMERA_INDEX)
+    camera.set(cv2.CAP_PROP_FRAME_WIDTH,  REQUEST_CAMERA_WIDTH)
+    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, REQUEST_CAMERA_HEIGHT)
+    camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    if not camera.isOpened():
+        print("[ERROR] Could not open camera.")
+        sys.exit(1)
+
+    win = "Register face — SPACE=capture  Q=cancel"
+    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    print("[REGISTER] Look at the camera.")
+    print("[REGISTER] Press SPACE to capture, Q to cancel.")
+
+    while True:
+        ret, frame = camera.read()
+        if not ret:
+            break
+
+        # Detect faces live so user can centre themselves
+        small     = cv2.resize(frame, (0, 0), fx=DETECTION_SCALE, fy=DETECTION_SCALE)
+        rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+        locs      = face_recognition.face_locations(rgb_small, model="hog")
+        inv       = 1.0 / DETECTION_SCALE
+
+        face_found = len(locs) == 1
+        for (t, r, b, l) in locs:
+            t2, r2, b2, l2 = int(t*inv), int(r*inv), int(b*inv), int(l*inv)
+            color = (0, 220, 0) if face_found else (0, 80, 220)
+            cv2.rectangle(frame, (l2, t2), (r2, b2), color, 2)
+
+        guide  = "Face detected — press SPACE to save" if face_found else "No face detected — please centre yourself"
+        g_col  = (0, 220, 0) if face_found else (0, 80, 220)
+        cv2.putText(frame, "Registering: " + name, (10, 28),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(frame, guide, (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, g_col, 2)
+        cv2.putText(frame, "SPACE=capture  Q=cancel",
+                    (10, frame.shape[0] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+
+        cv2.imshow(win, frame)
+        key = cv2.waitKey(1) & 0xFF
+
+        if key in (ord("q"), ord("Q")):
+            print("[REGISTER] Cancelled.")
+            break
+        elif key == ord(" "):
+            if not face_found:
+                print("[REGISTER] No face detected — try again.")
+                continue
+            # Save the full frame (the matcher will find the face inside it)
+            rgb_full = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            encs = face_recognition.face_encodings(rgb_full)
+            if not encs:
+                print("[REGISTER] Could not encode face — try again.")
+                continue
+            cv2.imwrite(out_path, frame)
+            print("[REGISTER] Saved: " + out_path)
+            print("[REGISTER] Run the script normally to start recognising you.")
+            break
+
+        if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
+            break
+
+    camera.release()
+    cv2.destroyAllWindows()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 def main():
+    parser = argparse.ArgumentParser(description="Face Recognition System")
+    parser.add_argument(
+        "--register", metavar="NAME",
+        help="Register a new face. E.g.: --register \"Faraz\""
+    )
+    args = parser.parse_args()
+
     print("=" * 60)
     print(" Face Recognition System  (PC + Raspberry Pi compatible)")
     print(" Library: face_recognition (dlib " + str(face_recognition.__version__) + ")")
     print("=" * 60)
+
+    if args.register:
+        register_face(args.register.strip())
+        return
+
     print("Reference faces dir : " + VALIDATED_IMAGES_DIR)
     print("Match threshold     : " + str(FACE_MATCH_THRESHOLD))
     print("Confirmation frames : " + str(CONFIRMATION_FRAMES))
