@@ -1,267 +1,264 @@
-#! /usr/bin/env python3
+﻿#!/usr/bin/env python3
+"""
+PC-Compatible Face Recognition - Laptop Webcam
+------------------------------------------------
+Replaces the Intel NCS (Movidius) inference pipeline with the
+`face_recognition` library (dlib-based) so the system runs entirely
+on a standard PC/laptop without any special hardware.
 
-# Copyright(c) 2017 Intel Corporation. 
-# License: MIT See LICENSE file in root directory.
+Usage:
+    python video_face_matcher.py
 
-import sys
-sys.path.insert(0, "../../ncapi2_shim")
-import mvnc_simple_api as mvnc
-#from mvnc import mvncapi as mvnc
-import numpy
-import cv2
-import sys
+Controls:
+    Q  - quit
+    S  - save a snapshot of the current frame
+    R  - reload known faces from validated_images/ at runtime
+
+Known faces:
+    Drop one or more .jpg/.png images into  face_recognition_model/validated_images/
+    Each image should contain exactly one clearly visible face.
+    The filename (without extension) is used as the person's display name.
+    e.g.  validated_images/alice.jpg  ->  label "alice"
+
+Match indicator:
+    Green border  = a known face detected in the frame
+    Red border    = no known face detected
+"""
+
 import os
+import sys
 import time
-import requests
+import cv2
+import numpy as np
+import face_recognition
 
-EXAMPLES_BASE_DIR='../../'
-IMAGES_DIR = './'
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+VALIDATED_IMAGES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "validated_images")
 
-VALIDATED_IMAGES_DIR = IMAGES_DIR + 'validated_images/'
-validated_image_filename = VALIDATED_IMAGES_DIR + 'valid.jpg'
-
-GRAPH_FILENAME = "facenet_celeb_ncs.graph"
-
-# name of the opencv window
-CV_WINDOW_NAME = "FaceNet"
-
-CAMERA_INDEX = 0
-REQUEST_CAMERA_WIDTH = 640
+CAMERA_INDEX = 0                  # 0 = default webcam; change if you have multiple
+REQUEST_CAMERA_WIDTH  = 640
 REQUEST_CAMERA_HEIGHT = 480
 
-# the same face will return 0.0
-# different faces return higher numbers
-# this is NOT between 0.0 and 1.0
-FACE_MATCH_THRESHOLD = 0.9
-state = 1
-                     
+# Euclidean distance threshold for face_recognition (lower = stricter)
+# face_recognition default tolerance is 0.6; we use 0.5 for better precision
+FACE_MATCH_THRESHOLD = 0.5
 
-# Run an inference on the passed image
-# image_to_classify is the image on which an inference will be performed
-#    upon successful return this image will be overlayed with boxes
-#    and labels identifying the found objects within the image.
-# ssd_mobilenet_graph is the Graph object from the NCAPI which will
-#    be used to peform the inference.
-def run_inference(image_to_classify, facenet_graph):
+# How many consecutive matching frames before we declare a confirmed match
+CONFIRMATION_FRAMES = 2
 
-    # get a resized version of the image that is the dimensions
-    # SSD Mobile net expects
-    resized_image = preprocess_image(image_to_classify)
+# Scale down each frame before face detection (speeds up processing)
+DETECTION_SCALE = 0.5
 
-    # ***************************************************************
-    # Send the image to the NCS
-    # ***************************************************************
-    facenet_graph.LoadTensor(resized_image.astype(numpy.float16), None)
+CV_WINDOW_NAME = "Face Recognition - PC (press Q to quit)"
 
-    # ***************************************************************
-    # Get the result from the NCS
-    # ***************************************************************
-    output, userobj = facenet_graph.GetResult()
+# ---------------------------------------------------------------------------
+# Load known faces from validated_images/
+# ---------------------------------------------------------------------------
 
-    return output
+def load_known_faces(images_dir):
+    """
+    Scan images_dir for image files and compute face encodings.
+    Returns (known_encodings, known_names).
+    """
+    known_encodings = []
+    known_names = []
 
+    if not os.path.isdir(images_dir):
+        print("[WARN] Validated images directory not found: " + images_dir)
+        return known_encodings, known_names
 
-# overlays the boxes and labels onto the display image.
-# display_image is the image on which to overlay to
-# image info is a text string to overlay onto the image.
-# matching is a Boolean specifying if the image was a match.
-# returns None
-def overlay_on_image(display_image, image_info, matching):
-    rect_width = 10
-    offset = int(rect_width/2)
-    if (image_info != None):
-        cv2.putText(display_image, image_info, (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
-    if (matching):
-        # match, green rectangle
-        cv2.rectangle(display_image, (0+offset, 0+offset),
-                      (display_image.shape[1]-offset-1, display_image.shape[0]-offset-1),
-                      (0, 255, 0), 10)
+    supported = (".jpg", ".jpeg", ".png", ".bmp")
+    for fname in sorted(os.listdir(images_dir)):
+        if not fname.lower().endswith(supported):
+            continue
+        fpath = os.path.join(images_dir, fname)
+        image = face_recognition.load_image_file(fpath)
+        encodings = face_recognition.face_encodings(image)
+        if not encodings:
+            print("[WARN] No face detected in " + fname + ", skipping.")
+            continue
+        if len(encodings) > 1:
+            print("[INFO] Multiple faces in " + fname + ", using the first one.")
+        name = os.path.splitext(fname)[0]
+        known_encodings.append(encodings[0])
+        known_names.append(name)
+        print("[INFO] Loaded face: " + name)
+
+    if not known_encodings:
+        print("[WARN] No valid reference faces loaded. All frames will show as UNKNOWN.")
     else:
-        # not a match, red rectangle
-        cv2.rectangle(display_image, (0+offset, 0+offset),
-                      (display_image.shape[1]-offset-1, display_image.shape[0]-offset-1),
-                      (0, 0, 255), 10)
+        print("[INFO] " + str(len(known_encodings)) + " reference face(s) loaded.")
+
+    return known_encodings, known_names
 
 
-# whiten an image
-def whiten_image(source_image):
-    source_mean = numpy.mean(source_image)
-    source_standard_deviation = numpy.std(source_image)
-    std_adjusted = numpy.maximum(source_standard_deviation, 1.0 / numpy.sqrt(source_image.size))
-    whitened_image = numpy.multiply(numpy.subtract(source_image, source_mean), 1 / std_adjusted)
-    return whitened_image
+# ---------------------------------------------------------------------------
+# Overlay helpers
+# ---------------------------------------------------------------------------
 
-# create a preprocessed image from the source image that matches the
-# network expectations and return it
-def preprocess_image(src):
-    # scale the image
-    NETWORK_WIDTH = 160
-    NETWORK_HEIGHT = 160
-    preprocessed_image = cv2.resize(src, (NETWORK_WIDTH, NETWORK_HEIGHT))
-
-    #convert to RGB
-    preprocessed_image = cv2.cvtColor(preprocessed_image, cv2.COLOR_BGR2RGB)
-
-    #whiten
-    preprocessed_image = whiten_image(preprocessed_image)
-
-    # return the preprocessed image
-    return preprocessed_image
-
-# determine if two images are of matching faces based on the
-# the network output for both images.
-def face_match(face1_output, face2_output):
-    if (len(face1_output) != len(face2_output)):
-        print('length mismatch in face_match')
-        return False
-    total_diff = 0
-    for output_index in range(0, len(face1_output)):
-        this_diff = numpy.square(face1_output[output_index] - face2_output[output_index])
-        total_diff += this_diff
-    print('Total Difference is: ' + str(total_diff))
-
-    if (total_diff < FACE_MATCH_THRESHOLD):
-        # the total difference between the two is under the threshold so
-        # the faces match.
-        return True
-
-    # differences between faces was over the threshold above so
-    # they didn't match.
-    return False
-
-# handles key presses
-# raw_key is the return value from cv2.waitkey
-# returns False if program should end, or True if should continue
-def handle_keys(raw_key):
-    ascii_code = raw_key & 0xFF
-    if ((ascii_code == ord('q')) or (ascii_code == ord('Q'))):
-        return False
-
-    return True
+def draw_border(frame, matching):
+    """Draw a thick colored border - green for match, red for no match."""
+    color = (0, 255, 0) if matching else (0, 0, 255)
+    thickness = 12
+    h, w = frame.shape[:2]
+    cv2.rectangle(frame, (thickness // 2, thickness // 2),
+                  (w - thickness // 2, h - thickness // 2),
+                  color, thickness)
 
 
-# start the opencv webcam streaming and pass each frame
-# from the camera to the facenet network for an inference
-# Continue looping until the result of the camera frame inference
-# matches the valid face output and then return.
-# valid_output is inference result for the valid image
-# validated image filename is the name of the valid image file
-# graph is the ncsdk Graph object initialized with the facenet graph file
-#   which we will run the inference on.
-# returns None
-def run_camera(valid_output, validated_image_filename, graph):
-    camera_device = cv2.VideoCapture(CAMERA_INDEX)
-    camera_device.set(cv2.CAP_PROP_FRAME_WIDTH, REQUEST_CAMERA_WIDTH)
-    camera_device.set(cv2.CAP_PROP_FRAME_HEIGHT, REQUEST_CAMERA_HEIGHT)
+def draw_face_boxes(frame, face_locations, face_names):
+    """Draw a box and label around each detected face."""
+    for (top, right, bottom, left), name in zip(face_locations, face_names):
+        matched = name != "UNKNOWN"
+        box_color  = (0, 220, 0)  if matched else (0, 0, 220)
+        text_color = (255, 255, 255)
 
-    actual_camera_width = camera_device.get(cv2.CAP_PROP_FRAME_WIDTH)
-    actual_camera_height = camera_device.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    print ('actual camera resolution: ' + str(actual_camera_width) + ' x ' + str(actual_camera_height))
+        cv2.rectangle(frame, (left, top), (right, bottom), box_color, 2)
 
-    if ((camera_device == None) or (not camera_device.isOpened())):
-        print ('Could not open camera.  Make sure it is plugged in.')
-        print ('Also, if you installed python opencv via pip or pip3 you')
-        print ('need to uninstall it and install from source with -D WITH_V4L=ON')
-        print ('Use the provided script: install-opencv-from_source.sh')
-        return
+        label_h = 22
+        cv2.rectangle(frame, (left, bottom - label_h - 4), (right, bottom),
+                      box_color, cv2.FILLED)
+        cv2.putText(frame, name, (left + 4, bottom - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, text_color, 1)
 
-    frame_count = 0
 
-    cv2.namedWindow(CV_WINDOW_NAME)
+def draw_hud(frame, fps, confirmed_match, matched_names):
+    """Overlay HUD text (FPS, status)."""
+    status_text  = "MATCH: " + ", ".join(matched_names) if confirmed_match else "NO MATCH"
+    status_color = (0, 220, 0) if confirmed_match else (0, 0, 220)
 
-    found_match = False
+    cv2.putText(frame, "FPS: " + str(round(fps, 1)), (10, 24),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 200, 200), 1)
+    cv2.putText(frame, status_text, (10, 52),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.75, status_color, 2)
+    cv2.putText(frame, "Q=quit  S=snapshot  R=reload faces", (10, frame.shape[0] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
 
-    while True :
-        # Read image from camera,
-        ret_val, vid_image = camera_device.read()
-        if (not ret_val):
-            print("No image from camera, exiting")
+
+# ---------------------------------------------------------------------------
+# Main recognition loop
+# ---------------------------------------------------------------------------
+
+def run_camera(known_encodings, known_names):
+    camera = cv2.VideoCapture(CAMERA_INDEX)
+    camera.set(cv2.CAP_PROP_FRAME_WIDTH,  REQUEST_CAMERA_WIDTH)
+    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, REQUEST_CAMERA_HEIGHT)
+
+    if not camera.isOpened():
+        print("[ERROR] Could not open webcam. "
+              "Check that a camera is connected and not in use by another app.")
+        sys.exit(1)
+
+    actual_w = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_h = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print("[INFO] Camera resolution: " + str(actual_w) + " x " + str(actual_h))
+
+    cv2.namedWindow(CV_WINDOW_NAME, cv2.WINDOW_NORMAL)
+
+    match_streak    = 0
+    confirmed_match = False
+    matched_names   = []
+
+    prev_time = time.time()
+    snapshot_count = 0
+
+    while True:
+        ret, frame = camera.read()
+        if not ret:
+            print("[ERROR] Failed to read frame from camera.")
             break
 
-        frame_count += 1
-        frame_name = 'camera frame ' + str(frame_count)
+        now  = time.time()
+        fps  = 1.0 / max(now - prev_time, 1e-6)
+        prev_time = now
 
-        # run a single inference on the image and overwrite the
-        # boxes and labels
-        test_output = run_inference(vid_image, graph)
+        # Scale down for faster detection
+        small = cv2.resize(frame, (0, 0), fx=DETECTION_SCALE, fy=DETECTION_SCALE)
+        rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
-        if (face_match(valid_output, test_output)):
-            found_match = True
-            print('Matched')
-            values = {'name': 'match'}
-            r = requests.put('http://127.0.0.1:8000/iot/rasp/mode/1/', data=values)
-        
-            print('PASS!  File ' + frame_name + ' matches ' + validated_image_filename)
-            
-            
+        face_locations_small = face_recognition.face_locations(rgb_small, model="hog")
+        face_encodings = face_recognition.face_encodings(rgb_small, face_locations_small)
+
+        # Scale locations back to full-frame coordinates
+        scale_inv = 1.0 / DETECTION_SCALE
+        face_locations = [
+            (int(top * scale_inv), int(right * scale_inv),
+             int(bottom * scale_inv), int(left * scale_inv))
+            for (top, right, bottom, left) in face_locations_small
+        ]
+
+        frame_names   = []
+        frame_matched = False
+
+        for encoding in face_encodings:
+            name = "UNKNOWN"
+            if known_encodings:
+                distances = face_recognition.face_distance(known_encodings, encoding)
+                best_idx  = int(np.argmin(distances))
+                if distances[best_idx] <= FACE_MATCH_THRESHOLD:
+                    name = known_names[best_idx]
+                    frame_matched = True
+            frame_names.append(name)
+
+        if frame_matched:
+            match_streak += 1
         else:
-            found_match = False
-            print('Unmatched')
-            values = {'name': 'unmatch'}
-            r = requests.put('http://127.0.0.1:8000/iot/rasp/mode/1/', data=values)
-            print('FAIL!  File ' + frame_name + ' does not match ' + validated_image_filename)
-               
+            match_streak = 0
 
-        overlay_on_image(vid_image, frame_name, found_match)
+        confirmed_match = match_streak >= CONFIRMATION_FRAMES
+        matched_names   = [n for n in frame_names if n != "UNKNOWN"] if confirmed_match else []
 
-        # check if the window is visible, this means the user hasn't closed
-        # the window via the X button
-        prop_val = cv2.getWindowProperty(CV_WINDOW_NAME, cv2.WND_PROP_ASPECT_RATIO)
-        if (prop_val < 0.0):
-            print('window closed')
+        draw_face_boxes(frame, face_locations, frame_names)
+        draw_border(frame, confirmed_match)
+        draw_hud(frame, fps, confirmed_match, matched_names)
+
+        if confirmed_match and match_streak == CONFIRMATION_FRAMES:
+            print("[MATCH] Confirmed: " + ", ".join(matched_names))
+
+        cv2.imshow(CV_WINDOW_NAME, frame)
+        key = cv2.waitKey(1) & 0xFF
+
+        if key == ord("q") or key == ord("Q"):
+            print("[INFO] User quit.")
+            break
+        elif key == ord("s") or key == ord("S"):
+            snap_path = "snapshot_" + str(snapshot_count).zfill(4) + ".jpg"
+            cv2.imwrite(snap_path, frame)
+            print("[INFO] Snapshot saved: " + snap_path)
+            snapshot_count += 1
+        elif key == ord("r") or key == ord("R"):
+            print("[INFO] Reloading known faces...")
+            new_enc, new_names = load_known_faces(VALIDATED_IMAGES_DIR)
+            known_encodings.clear()
+            known_names.clear()
+            known_encodings.extend(new_enc)
+            known_names.extend(new_names)
+
+        if cv2.getWindowProperty(CV_WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
             break
 
-        # display the results and wait for user to hit a key
-        cv2.imshow(CV_WINDOW_NAME, vid_image)
-        raw_key = cv2.waitKey(1)
-        if (raw_key != -1):
-            if (handle_keys(raw_key) == False):
-                print('user pressed Q')
-                break
-        
-    
-    if (found_match):
-        cv2.imshow(CV_WINDOW_NAME, vid_image)
-        cv2.waitKey(0)
+    camera.release()
+    cv2.destroyAllWindows()
 
 
-# This function is called from the entry point to do
-# all the work of the program
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 def main():
+    print("=" * 60)
+    print(" PC Face Recognition System")
+    print("=" * 60)
+    print("Reference faces directory : " + VALIDATED_IMAGES_DIR)
+    print("Match threshold           : " + str(FACE_MATCH_THRESHOLD))
+    print("Confirmation frames       : " + str(CONFIRMATION_FRAMES))
+    print()
 
-    # Get a list of ALL the sticks that are plugged in
-    # we need at least one
-    devices = mvnc.EnumerateDevices()
-    if len(devices) == 0:
-        print('No NCS devices found')
-        quit()
-
-    # Pick the first stick to run the network
-    device = mvnc.Device(devices[0])
-
-    # Open the NCS
-    device.OpenDevice()
-
-    # The graph file that was created with the ncsdk compiler
-    graph_file_name = GRAPH_FILENAME
-
-    # read in the graph file to memory buffer
-    with open(graph_file_name, mode='rb') as f:
-        graph_in_memory = f.read()
-
-    # create the NCAPI graph instance from the memory buffer containing the graph file.
-    graph = device.AllocateGraph(graph_in_memory)
-
-    validated_image = cv2.imread(validated_image_filename)
-    valid_output = run_inference(validated_image, graph)
-
-    run_camera(valid_output, validated_image_filename, graph)
-
-    # Clean up the graph and the device
-    graph.DeallocateGraph()
-    device.CloseDevice()
+    known_encodings, known_names = load_known_faces(VALIDATED_IMAGES_DIR)
+    run_camera(known_encodings, known_names)
 
 
-# main entry point for program. we'll call main() to do what needs to be done.
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
