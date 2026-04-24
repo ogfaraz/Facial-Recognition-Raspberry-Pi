@@ -78,6 +78,9 @@ def load_known_faces(images_dir):
             continue
         fpath = os.path.join(images_dir, fname)
         image = face_recognition.load_image_file(fpath)
+        # Ensure 8-bit RGB — drop alpha channel if present (e.g. RGBA PNGs)
+        if image.ndim == 3 and image.shape[2] == 4:
+            image = image[:, :, :3]
         encodings = face_recognition.face_encodings(image)
         if not encodings:
             print("[WARN] No face found in " + fname + " — skipping.")
