@@ -31,6 +31,8 @@ Match indicator:
 import os
 import sys
 import time
+import queue
+import threading
 import cv2
 import numpy as np
 import face_recognition
@@ -53,9 +55,13 @@ FACE_MATCH_THRESHOLD = 0.5
 # Require N consecutive matching frames before confirming identity
 CONFIRMATION_FRAMES = 2
 
-# Scale factor applied before detection (0.5 = half resolution).
+# Scale factor applied before detection (0.25 = quarter resolution).
 # Speeds up processing significantly; increase toward 1.0 for better accuracy.
-DETECTION_SCALE = 0.5
+DETECTION_SCALE = 0.25
+
+# Run face detection only on every Nth captured frame; display uses the last
+# known result for skipped frames — big FPS boost with minimal visual lag.
+DETECT_EVERY_N_FRAMES = 3
 
 CV_WINDOW_NAME = "Face Recognition (Q=quit  S=snapshot  R=reload)"
 
@@ -151,6 +157,7 @@ def run_camera(known_encodings, known_names):
     camera = cv2.VideoCapture(CAMERA_INDEX)
     camera.set(cv2.CAP_PROP_FRAME_WIDTH,  REQUEST_CAMERA_WIDTH)
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, REQUEST_CAMERA_HEIGHT)
+    camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # reduce capture buffer lag
 
     if not camera.isOpened():
         print("[ERROR] Could not open camera (index " + str(CAMERA_INDEX) + ").")
@@ -163,10 +170,47 @@ def run_camera(known_encodings, known_names):
 
     cv2.namedWindow(CV_WINDOW_NAME, cv2.WINDOW_NORMAL)
 
+    # --- Background detection thread ---
+    # Decouples slow face detection from the display loop so the camera
+    # feed renders at full speed while detection runs asynchronously.
+    _det_queue = queue.Queue(maxsize=1)   # drop stale frames when busy
+    _res_lock  = threading.Lock()
+    _res       = {"locations": [], "names": []}
+
+    def _detection_worker():
+        while True:
+            item = _det_queue.get()
+            if item is None:
+                break
+            rgb_small, enc_snapshot, names_snapshot = item
+            locs  = face_recognition.face_locations(rgb_small, model="hog")
+            faces = face_recognition.face_encodings(rgb_small, locs)
+            inv   = 1.0 / DETECTION_SCALE
+            full_locs = [
+                (int(t * inv), int(r * inv), int(b * inv), int(l * inv))
+                for (t, r, b, l) in locs
+            ]
+            names_out = []
+            for enc in faces:
+                name = "UNKNOWN"
+                if enc_snapshot:
+                    distances = face_recognition.face_distance(enc_snapshot, enc)
+                    best = int(np.argmin(distances))
+                    if distances[best] <= FACE_MATCH_THRESHOLD:
+                        name = names_snapshot[best]
+                names_out.append(name)
+            with _res_lock:
+                _res["locations"] = full_locs
+                _res["names"]     = names_out
+
+    det_thread = threading.Thread(target=_detection_worker, daemon=True)
+    det_thread.start()
+
     match_streak    = 0
     confirmed_match = False
     matched_names   = []
     snapshot_count  = 0
+    frame_count     = 0
     prev_time       = time.time()
 
     while True:
@@ -178,37 +222,26 @@ def run_camera(known_encodings, known_names):
         now       = time.time()
         fps       = 1.0 / max(now - prev_time, 1e-6)
         prev_time = now
+        frame_count += 1
 
-        # --- Detect faces on a scaled-down copy (faster) ---
-        small     = cv2.resize(frame, (0, 0), fx=DETECTION_SCALE, fy=DETECTION_SCALE)
-        rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+        # --- Submit frame for detection every N frames (non-blocking) ---
+        if frame_count % DETECT_EVERY_N_FRAMES == 0:
+            small     = cv2.resize(frame, (0, 0), fx=DETECTION_SCALE, fy=DETECTION_SCALE)
+            rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            try:
+                # Shallow-copy the lists so hot-reload on main thread is safe
+                _det_queue.put_nowait((rgb_small, list(known_encodings), list(known_names)))
+            except queue.Full:
+                pass   # detector still busy — reuse previous result
 
-        face_locs_small = face_recognition.face_locations(rgb_small, model="hog")
-        face_encs       = face_recognition.face_encodings(rgb_small, face_locs_small)
-
-        # Scale bounding boxes back to full resolution
-        inv = 1.0 / DETECTION_SCALE
-        face_locations = [
-            (int(t * inv), int(r * inv), int(b * inv), int(l * inv))
-            for (t, r, b, l) in face_locs_small
-        ]
-
-        # --- Match each face against known faces ---
-        frame_names   = []
-        frame_matched = False
-
-        for enc in face_encs:
-            name = "UNKNOWN"
-            if known_encodings:
-                distances = face_recognition.face_distance(known_encodings, enc)
-                best      = int(np.argmin(distances))
-                if distances[best] <= FACE_MATCH_THRESHOLD:
-                    name          = known_names[best]
-                    frame_matched = True
-            frame_names.append(name)
+        # --- Grab latest detection results (never blocks) ---
+        with _res_lock:
+            face_locations = _res["locations"][:]
+            frame_names    = _res["names"][:]
 
         # --- Confirmation streak ---
-        match_streak = match_streak + 1 if frame_matched else 0
+        frame_matched = any(n != "UNKNOWN" for n in frame_names)
+        match_streak  = match_streak + 1 if frame_matched else 0
         confirmed_match = match_streak >= CONFIRMATION_FRAMES
         matched_names   = [n for n in frame_names if n != "UNKNOWN"] if confirmed_match else []
 
@@ -241,6 +274,10 @@ def run_camera(known_encodings, known_names):
 
         if cv2.getWindowProperty(CV_WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
             break
+
+    # Shut down detection thread cleanly
+    _det_queue.put(None)
+    det_thread.join(timeout=2)
 
     camera.release()
     cv2.destroyAllWindows()
