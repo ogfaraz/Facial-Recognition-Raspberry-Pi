@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 
 @dataclass(frozen=True)
 class CameraSettings:
-    index: int = 0
+    source: int | str = 0  # device index OR MJPEG/RTSP URL
     width: int = 640
     height: int = 480
     fps: int = 60
@@ -33,13 +34,19 @@ class AppConfig:
     camera: CameraSettings
     recognition: RecognitionSettings
     window: WindowSettings
+    headless: bool = False
 
 
-def default_app_config(base_dir: Path | None = None) -> AppConfig:
+def default_app_config(
+    base_dir: Path | None = None,
+    camera_source: int | str = 0,
+) -> AppConfig:
     root_dir = base_dir if base_dir is not None else Path(__file__).resolve().parents[1]
+    headless = os.environ.get("HEADLESS", "").lower() in ("1", "true", "yes")
     return AppConfig(
         validated_images_dir=root_dir / "validated_images",
-        camera=CameraSettings(),
+        camera=CameraSettings(source=camera_source),
         recognition=RecognitionSettings(),
         window=WindowSettings(),
+        headless=headless,
     )

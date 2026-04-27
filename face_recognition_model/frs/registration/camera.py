@@ -6,7 +6,7 @@ from frs.config import AppConfig
 
 
 def open_registration_camera(app_config: AppConfig) -> cv2.VideoCapture:
-    camera = cv2.VideoCapture(app_config.camera.index)
+    camera = cv2.VideoCapture(app_config.camera.source)
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, app_config.camera.width)
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, app_config.camera.height)
     camera.set(cv2.CAP_PROP_BUFFERSIZE, app_config.camera.buffersize)

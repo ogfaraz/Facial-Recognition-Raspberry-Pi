@@ -17,8 +17,19 @@ def print_banner() -> None:
     print("=" * 60)
 
 
-def run_application(register_name: str | None = None) -> None:
-    app_config = default_app_config(Path(__file__).resolve().parents[1])
+def run_application(
+    register_name: str | None = None,
+    camera_source: int | str = 0,
+    headless: bool = False,
+) -> None:
+    app_config = default_app_config(
+        Path(__file__).resolve().parents[1],
+        camera_source=camera_source,
+    )
+    # CLI --headless overrides the env-var value already baked into app_config.
+    if headless and not app_config.headless:
+        from dataclasses import replace
+        app_config = replace(app_config, headless=True)
     print_banner()
 
     if register_name:

@@ -1,0 +1,88 @@
+# ---------------------------------------------------------------
+# docker-compose.yml  —  Face Recognition System
+# ---------------------------------------------------------------
+#
+# CAMERA ACCESS
+#   Windows (laptop webcam):
+#     1. Run camera_server.py on the Windows host (keeps terminal open)
+#     2. Set CAMERA_URL=http://host.docker.internal:8080/ in .env
+#     3. docker compose up
+#
+#   Linux / Raspberry Pi (USB camera):
+#     The devices: section below passes /dev/video0 into the container.
+#     Uncomment it, then remove CAMERA_URL from .env (or leave it empty).
+#
+# DISPLAY (OpenCV live window)
+#   Linux host:
+#     xhost +local:docker          # grant X access once per session
+#     DISPLAY=$DISPLAY docker compose up
+#
+#   Windows host (WSLg / VcXsrv):
+#     If using WSL2+WSLg, DISPLAY is set automatically inside WSL.
+#     If using VcXsrv, set DISPLAY=host.docker.internal:0.0 in .env
+#     and launch VcXsrv with "Disable access control" checked.
+#
+# REGISTERING A FACE
+#   docker compose run --rm face-recognition --register "Full Name"
+# ---------------------------------------------------------------
+
+services:
+  face-recognition:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Parallel make jobs for dlib compilation. Tune to your CPU.
+        JOBS: "4"
+
+    image: face-recognition-system:latest
+
+    # ---- Linux / Pi only ----------------------------------------
+    # Uncomment to pass the USB camera into the container.
+    # Not needed (and not supported) on Windows Docker Desktop.
+    # devices:
+    #   - /dev/video0:/dev/video0
+    # -------------------------------------------------------------
+
+    environment:
+      # X11 display — inherits from the host shell.
+      # Override via .env file: DISPLAY=:0
+      - DISPLAY=${DISPLAY:-:0}
+      # Prevents Python from buffering stdout/stderr.
+      - PYTHONUNBUFFERED=1
+      # Camera device index — used when CAMERA_URL is empty.
+      - CAMERA_INDEX=${CAMERA_INDEX:-0}
+      # Windows dev: run camera_server.py on the host, then set in .env:
+      #   CAMERA_URL=http://host.docker.internal:8080/
+      # Leave empty on Linux/Pi where the devices: block is used instead.
+      - CAMERA_URL=${CAMERA_URL:-}
+      # Set HEADLESS=true in .env when running on Windows Docker Desktop
+      # (no X11 display available). On Linux/Pi leave unset or set to false.
+      - HEADLESS=${HEADLESS:-false}
+
+    volumes:
+      # X11 socket — required for OpenCV windows on Linux.
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Mount validated_images as a named volume so registered faces
+      # persist across container restarts.
+      - validated_images:/app/face_recognition_model/validated_images
+
+    # host networking is the simplest way to share the X11 socket
+    # on Linux. Remove this line if you need isolated networking.
+    network_mode: host
+
+    # Keep stdin/tty open so keyboard shortcuts (Q/S/R) work.
+    stdin_open: true
+    tty: true
+
+    restart: "no"
+
+# Named volume — keeps enrolled face images between runs.
+volumes:
+  validated_images:
+    driver: local
+    # Optionally bind to a host folder instead of a Docker-managed volume:
+    # driver_opts:
+    #   type: none
+    #   o: bind
+    #   device: ./face_recognition_model/validated_images

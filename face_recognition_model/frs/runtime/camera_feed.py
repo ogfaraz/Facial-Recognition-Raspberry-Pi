@@ -18,7 +18,8 @@ class CameraContext:
 
 
 def open_camera(settings: CameraSettings) -> cv2.VideoCapture:
-    camera = cv2.VideoCapture(settings.index)
+    camera = cv2.VideoCapture(settings.source)
+    # CAP_PROP_* hints are silently ignored by network streams — harmless to set.
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, settings.width)
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, settings.height)
     camera.set(cv2.CAP_PROP_FPS, settings.fps)

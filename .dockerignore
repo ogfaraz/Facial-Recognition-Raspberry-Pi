@@ -1,0 +1,44 @@
+# ---------------------------------------------------------------
+# .dockerignore  —  Face Recognition System
+# ---------------------------------------------------------------
+
+# Python virtual environments (large, not needed in image)
+venv/
+.venv/
+django_venv/
+
+# Python bytecode
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+
+# Git & CI
+.git/
+.gitattributes
+.gitignore
+.travis.yml
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Docs & misc
+README.md
+LICENSE.md
+_config.yml
+image/
+
+# Windows-only wheel (built for win_amd64, not useful in Linux image)
+*.whl
+
+# Env files with secrets
+.env
+*.env
+
+# requirements.txt is Windows-pinned; requirements2.txt is the Linux one.
+# The Dockerfile explicitly copies requirements2.txt, so exclude the other.
+requirements.txt
