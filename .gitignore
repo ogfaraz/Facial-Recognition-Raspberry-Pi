@@ -63,3 +63,5 @@ target/
 \.DS_Store
 
 ran-django-template/\.idea/
+
+validated_images

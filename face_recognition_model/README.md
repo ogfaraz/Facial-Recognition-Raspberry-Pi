@@ -50,6 +50,52 @@ faces get a **red border**.
 
 ---
 
+## Professional Folder Structure
+
+The runtime has been modularized for production-style maintainability. The
+entrypoint is still `video_face_matcher.py`, but implementation now lives in
+small focused modules:
+
+```text
+face_recognition_model/
+    video_face_matcher.py        # compatibility entrypoint
+    validated_images/            # reference faces
+    frs/
+        cli.py                   # argparse entrypoint
+        app.py                   # app orchestration
+        config.py                # typed settings/dataclasses
+        types.py                 # shared runtime dataclasses
+        io/
+            known_faces.py       # load/reload reference embeddings
+            registration_store.py# registration image file operations
+        recognition/
+            detector.py          # face detect + encoding helpers
+            matcher.py           # threshold-based identity matching
+        runtime/
+            camera_feed.py       # camera reader thread and buffer
+            detection_worker.py  # async detector worker
+            frame_processing.py  # per-frame detect/match/draw pipeline
+            frame_state.py       # runtime counters and state dataclass
+            loop_controls.py     # key-driven actions and exit conditions
+            match_state.py       # confirmation streak state logic
+            main_loop.py         # live camera loop
+            keys.py              # keyboard action mapping
+            windows_timer.py     # high-resolution timer helper
+        registration/
+            camera.py            # registration camera setup/teardown
+            capture.py           # face validation and image persistence
+            frame_detection.py   # detection + box drawing for registration
+            overlay.py           # registration HUD/progress overlay
+            poses.py             # guided registration prompts
+            session.py           # single-pose capture loop
+            state.py             # registration progress dataclass
+            workflow.py          # registration flow
+        ui/
+            drawing.py           # frame overlays and HUD drawing
+```
+
+---
+
 ## Controls
 
 | Key | Action |
@@ -60,7 +106,9 @@ faces get a **red border**.
 
 ---
 
-## Configuration (top of `video_face_matcher.py`)
+## Configuration
+
+Configuration is now in `frs/config.py`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
