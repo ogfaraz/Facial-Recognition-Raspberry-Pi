@@ -3,22 +3,15 @@
 [![GitHub release](https://img.shields.io/badge/release-v2.0-brightgreen.svg)](https://github.com/nature1995/Face_Recognition_System/releases)
 [![Language python](https://img.shields.io/badge/python-3.5-red.svg)](https://www.python.org)
 [![Language python](https://img.shields.io/badge/python-3.6-blue.svg)](https://www.python.org)
-[![Build Status](https://travis-ci.com/nature1995/Face-Recognition-System.svg?branch=master)](https://travis-ci.com/nature1995/Face-Recognition-System)
 [![License](https://img.shields.io/dub/l/vibe-d.svg)](https://opensource.org/licenses/MIT)
 
-This is a project of the facial recognition with Movidius on RaspberryPi 3B+ platform. It also uses Django and Django REST framework which providing the web platform. The project would like to build a safety and intelligent face recognition system in AI era.
+This is a project of the facial recognition with Movidius on RaspberryPi 3B+ platform. The project would like to build a safety and intelligent face recognition system in AI era.
 
 If you appreciate the content 📖, support projects visibility, give 👍| ⭐| 👏
 
-# Compatibility
-The code is tested using Tensorflow r1.7 and Movidius NCSDK2 under Debin 2018-06-27（Kernel version:4.14） with django 2.1.5 and Python 3.5 & 3.6. 
-
 # File architecture
 ```
-django_venv/  # django virtual env for RPI
 face_recognition_model/  # Movidius NCS code     
-iot_control/  # iot control code
-ran-django-template/  # django platform using my own model
 requirements.txt  # requirements for run the code
 ```
 
