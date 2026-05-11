@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
+
+# scikit-image deprecated estimate() in 0.26; InsightFace's face_align.py still uses it.
+# albumentations emits a UserWarning when it can't reach PyPI to check its version.
+# Neither affects correctness — suppress both so the console stays clean.
+warnings.filterwarnings("ignore", category=FutureWarning, module="skimage")
+warnings.filterwarnings("ignore", message="Error fetching version info", category=UserWarning)
 
 from frs.config import default_app_config
 from frs.io.known_faces import load_known_faces
@@ -10,8 +17,8 @@ from frs.runtime.main_loop import run_camera_loop
 def print_banner() -> None:
     print("=" * 60)
     print(" Face Recognition System  (PC + Raspberry Pi compatible)")
-    print(" Backend : InsightFace  (ArcFace / buffalo_s, ONNX Runtime)")
-    print("=" * 60)
+    print(" Backend : InsightFace  (ArcFace buffalo_l | ResNet-50 + SCRFD-10GF)")
+    print("="* 60)
 
 
 def run_application(

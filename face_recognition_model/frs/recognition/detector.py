@@ -11,10 +11,20 @@ def _get_app():
     if _app is None:
         import insightface
         _app = insightface.app.FaceAnalysis(
-            name="buffalo_s",              # lightweight ArcFace model
+            name="buffalo_l",
+            # Load only the two models we need:
+            #   detection   → det_10g.onnx      (SCRFD-10GF, ResGe-Net, 10 GFlops)
+            #   recognition → w600k_r50.onnx    (ArcFace, ResNet-50, 600k identities)
+            # Skipped (saves ~139 MB RAM):
+            #   landmark_2d_106 → 2d106det.onnx
+            #   landmark_3d_68  → 1k3d68.onnx
+            #   genderage       → genderage.onnx
+            allowed_modules=["detection", "recognition"],
             providers=["CPUExecutionProvider"],
         )
-        _app.prepare(ctx_id=0, det_size=(320, 320))
+        # 640×640 det_size gives SCRFD-10GF its full accuracy.
+        # The async worker absorbs the extra compute cost.
+        _app.prepare(ctx_id=0, det_size=(640, 640))
     return _app
 
 
