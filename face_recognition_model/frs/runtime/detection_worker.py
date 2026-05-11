@@ -5,14 +5,13 @@ import threading
 
 import cv2
 
-from frs.recognition.detector import detect_on_small_frame, upscale_locations
+from frs.recognition.detector import detect_on_frame
 from frs.recognition.matcher import match_names
 from frs.types import DetectionResult, FaceEncoding
 
 
 class AsyncDetectionWorker:
-    def __init__(self, detection_scale: float, threshold: float) -> None:
-        self._detection_scale = detection_scale
+    def __init__(self, threshold: float) -> None:
         self._threshold = threshold
         self._queue: queue.Queue[tuple[cv2.typing.MatLike, list[FaceEncoding], list[str]] | None] = queue.Queue(maxsize=1)
         self._result_lock = threading.Lock()
@@ -28,10 +27,9 @@ class AsyncDetectionWorker:
         known_encodings: list[FaceEncoding],
         known_names: list[str],
     ) -> None:
-        small_frame = cv2.resize(frame, (0, 0), fx=self._detection_scale, fy=self._detection_scale)
-        rgb_small = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        # Pass the raw BGR frame — InsightFace handles internal resizing via det_size.
         try:
-            self._queue.put_nowait((rgb_small, list(known_encodings), list(known_names)))
+            self._queue.put_nowait((frame, list(known_encodings), list(known_names)))
         except queue.Full:
             pass
 
@@ -52,11 +50,10 @@ class AsyncDetectionWorker:
             if item is None:
                 break
 
-            rgb_small, known_encodings, known_names = item
-            locations, encodings = detect_on_small_frame(rgb_small)
-            full_size_locations = upscale_locations(locations, self._detection_scale)
+            bgr_frame, known_encodings, known_names = item
+            locations, encodings = detect_on_frame(bgr_frame)
             names = match_names(encodings, known_encodings, known_names, self._threshold)
 
             with self._result_lock:
-                self._result.locations = full_size_locations
+                self._result.locations = locations
                 self._result.names = names

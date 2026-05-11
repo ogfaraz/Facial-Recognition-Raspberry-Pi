@@ -3,8 +3,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import face_recognition
+import cv2
 
+from frs.recognition.detector import _get_app
 from frs.types import KnownFaces
 
 _SUPPORTED_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp")
@@ -16,6 +17,7 @@ def label_from_filename(file_name: str) -> str:
 
 
 def load_known_faces(images_dir: Path) -> KnownFaces:
+    app = _get_app()
     known_faces = KnownFaces()
 
     if not images_dir.is_dir():
@@ -26,19 +28,25 @@ def load_known_faces(images_dir: Path) -> KnownFaces:
         if image_path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
             continue
 
-        image = face_recognition.load_image_file(str(image_path))
-        if image.ndim == 3 and image.shape[2] == 4:
-            image = image[:, :, :3]
+        img = cv2.imread(str(image_path))  # BGR — InsightFace native format
+        if img is None:
+            print(f"[WARN] Could not read {image_path.name} - skipping.")
+            continue
 
-        encodings = face_recognition.face_encodings(image)
-        if not encodings:
+        faces = app.get(img)
+        if not faces:
             print(f"[WARN] No face found in {image_path.name} - skipping.")
             continue
-        if len(encodings) > 1:
-            print(f"[INFO] Multiple faces in {image_path.name} - using first.")
+        if len(faces) > 1:
+            print(f"[INFO] Multiple faces in {image_path.name} - using the largest.")
+            faces = sorted(
+                faces,
+                key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]),
+                reverse=True,
+            )
 
         label = label_from_filename(image_path.name)
-        known_faces.add(encodings[0], label)
+        known_faces.add(faces[0].normed_embedding, label)
         print(f"[INFO] Loaded: {image_path.stem} -> label '{label}'")
 
     if len(known_faces) == 0:

@@ -20,13 +20,15 @@ def process_frame(
         detector.submit(frame, enc_snapshot, name_snapshot)
 
     detection_result = detector.latest_result()
-    just_confirmed = update_match_state(
+    just_confirmed, just_confirmed_unknown = update_match_state(
         detection_result.names,
         state.match_state,
         app_config.recognition.confirmation_frames,
     )
     if just_confirmed:
         print(f"[MATCH] Confirmed: {', '.join(state.match_state.names)}")
+    if just_confirmed_unknown:
+        print("[ALERT] Unknown person detected")
 
     draw_face_boxes(frame, detection_result.locations, detection_result.names)
     draw_border(frame, state.match_state.confirmed)

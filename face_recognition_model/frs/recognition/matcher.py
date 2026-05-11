@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import numpy as np
-import face_recognition
 
 from frs.types import FaceEncoding
 
@@ -12,15 +11,19 @@ def match_names(
     known_names: list[str],
     threshold: float,
 ) -> list[str]:
-    names: list[str] = []
+    """Match ArcFace embeddings using cosine similarity.
 
+    normed_embedding is already L2-normalised, so dot product == cosine similarity.
+    threshold is the *minimum* similarity to accept a match (typical: 0.35).
+    """
+    names: list[str] = []
     for encoding in face_encodings:
         name = "UNKNOWN"
         if known_encodings:
-            distances = face_recognition.face_distance(known_encodings, encoding)
-            best_index = int(np.argmin(distances))
-            if distances[best_index] <= threshold:
+            known_arr = np.array(known_encodings)   # (N, 512)
+            sims = known_arr @ encoding              # cosine similarities (N,)
+            best_index = int(np.argmax(sims))
+            if sims[best_index] >= threshold:
                 name = known_names[best_index]
         names.append(name)
-
     return names

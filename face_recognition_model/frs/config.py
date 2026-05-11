@@ -16,9 +16,10 @@ class CameraSettings:
 
 @dataclass(frozen=True)
 class RecognitionSettings:
-    match_threshold: float = 0.5
+    # Cosine similarity threshold for ArcFace (InsightFace) embeddings.
+    # Higher = stricter match required. Typical range: 0.25 – 0.50.
+    match_threshold: float = 0.35
     confirmation_frames: int = 2
-    detection_scale: float = 0.5
     detect_every_n_frames: int = 6
 
 
@@ -35,6 +36,7 @@ class AppConfig:
     recognition: RecognitionSettings
     window: WindowSettings
     headless: bool = False
+    serve_port: int | None = None  # HTTP registration API port; None = disabled
 
 
 def default_app_config(
@@ -43,10 +45,13 @@ def default_app_config(
 ) -> AppConfig:
     root_dir = base_dir if base_dir is not None else Path(__file__).resolve().parents[1]
     headless = os.environ.get("HEADLESS", "").lower() in ("1", "true", "yes")
+    _port_env = os.environ.get("SERVE_PORT", "").strip()
+    serve_port: int | None = int(_port_env) if _port_env.isdigit() else None
     return AppConfig(
         validated_images_dir=root_dir / "validated_images",
         camera=CameraSettings(source=camera_source),
         recognition=RecognitionSettings(),
         window=WindowSettings(),
         headless=headless,
+        serve_port=serve_port,
     )

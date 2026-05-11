@@ -48,6 +48,8 @@ class MatchState:
     streak: int = 0
     confirmed: bool = False
     names: list[str] = field(default_factory=list)
+    unknown_streak: int = 0
+    unknown_confirmed: bool = False
 
 
 @dataclass

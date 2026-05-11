@@ -59,6 +59,9 @@ services:
       # Set HEADLESS=true in .env when running on Windows Docker Desktop
       # (no X11 display available). On Linux/Pi leave unset or set to false.
       - HEADLESS=${HEADLESS:-false}
+      # HTTP registration API port. Set in .env: SERVE_PORT=5000
+      # Leave unset to disable the API.
+      - SERVE_PORT=${SERVE_PORT:-}
 
     volumes:
       # X11 socket — required for OpenCV windows on Linux.
@@ -67,9 +70,15 @@ services:
       # persist across container restarts.
       - validated_images:/app/face_recognition_model/validated_images
 
-    # host networking is the simplest way to share the X11 socket
-    # on Linux. Remove this line if you need isolated networking.
-    network_mode: host
+    # Port mapping for the HTTP registration API.
+    # On Linux with network_mode: host this is not needed — uncomment
+    # that line below and remove the ports block instead.
+    ports:
+      - "${SERVE_PORT:-5000}:${SERVE_PORT:-5000}"
+
+    # Linux only: uncomment for host networking (shares X11 socket easily).
+    # Incompatible with Windows Docker Desktop and with the ports: block above.
+    # network_mode: host
 
     # Keep stdin/tty open so keyboard shortcuts (Q/S/R) work.
     stdin_open: true

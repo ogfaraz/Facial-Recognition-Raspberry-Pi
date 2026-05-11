@@ -48,7 +48,6 @@ def run_camera_loop(known_faces: KnownFaces, app_config: AppConfig) -> None:
             return
 
         detector = AsyncDetectionWorker(
-            detection_scale=app_config.recognition.detection_scale,
             threshold=app_config.recognition.match_threshold,
         )
         detector.start()

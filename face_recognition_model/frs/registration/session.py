@@ -25,8 +25,8 @@ def run_pose_capture(
         if not ret:
             return False
 
-        locations = detect_face_locations(frame, app_config.recognition.detection_scale)
-        face_found = draw_detection_boxes(frame, locations, app_config.recognition.detection_scale)
+        locations = detect_face_locations(frame)
+        face_found = draw_detection_boxes(frame, locations)
         draw_registration_overlay(frame, name, pose, saved_count, total_poses, face_found)
 
         cv2.imshow(window_name, frame)

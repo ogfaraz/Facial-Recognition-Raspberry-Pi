@@ -36,6 +36,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("HEADLESS", "").lower() in ("1", "true", "yes"),
         help="Disable the OpenCV display window (also set via $HEADLESS env var)",
     )
+    parser.add_argument(
+        "--serve-port",
+        metavar="PORT",
+        type=int,
+        default=int(os.environ.get("SERVE_PORT", "0")) or None,
+        help=(
+            "Enable the HTTP registration API on this port. "
+            "E.g.: --serve-port 5000 "
+            "(also read from $SERVE_PORT env var)"
+        ),
+    )
     return parser
 
 
@@ -44,7 +55,7 @@ def main() -> None:
     args = parser.parse_args()
     # URL takes precedence over numeric index when provided.
     camera_source: int | str = args.camera_url if args.camera_url else args.camera
-    run_application(args.register, camera_source=camera_source, headless=args.headless)
+    run_application(args.register, camera_source=camera_source, headless=args.headless, serve_port=args.serve_port)
 
 
 if __name__ == "__main__":
